@@ -193,6 +193,8 @@ def monitor_tasks(task_ids, interval=10):
             # Continue if not all tasks are complete
             if not all_completed:
                 print(f"\nChecking again in {interval} seconds...")
+                print("You can check status at: https://code.earthengine.google.com/tasks")
+                print("Or at: https://console.cloud.google.com/earth-engine/tasks?project=ee-bonglantrungmuoi")
                 print("(Press Ctrl+C to stop monitoring. Tasks will continue running in the background)")
                 time.sleep(interval)
         
@@ -206,6 +208,8 @@ def monitor_tasks(task_ids, interval=10):
     except KeyboardInterrupt:
         interrupted_elapsed = time.time() - start_time
         interrupted_time_str = format_time_elapsed_short(interrupted_elapsed)
+        print("You can check status at: https://code.earthengine.google.com/tasks")
+        print("Or at: https://console.cloud.google.com/earth-engine/tasks?project=ee-bonglantrungmuoi")
         print(f"\nMonitoring stopped after {interrupted_time_str}. Tasks will continue running in the background.")
         print("You can check status at: https://code.earthengine.google.com/tasks")
         return False

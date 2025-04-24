@@ -1,0 +1,9 @@
+# Cac thu muc
+__pycache__/
+
+# Moi truong 
+.DS_Store
+
+# Linh tinh
+anhphuc.py
+anhphuc1.py
