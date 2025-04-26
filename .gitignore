@@ -1,5 +1,6 @@
 # Cac thu muc
 __pycache__/
+MODIS_LST_VN_RAW/
 
 # Moi truong 
 .DS_Store
