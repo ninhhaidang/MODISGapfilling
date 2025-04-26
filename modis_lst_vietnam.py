@@ -92,21 +92,34 @@ print(f"Số luồng xử lý: {max_workers*2}")
 print(f"Tổng số ảnh cần tải: Terra ({modisTerra.size().getInfo()}) + Aqua ({modisAqua.size().getInfo()})")
 print("===========================\n")
 
+start_time = time.time()
+print("Đang khởi tạo tác vụ tải...")
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers*2) as executor:
     # Chuẩn bị args cho tất cả các ảnh Terra và Aqua
+    print("Đang chuẩn bị danh sách Terra...")
     terra_args = [(terra_list, "Terra", i, modisTerra.size().getInfo()) for i in range(modisTerra.size().getInfo())]
+    print("Đang chuẩn bị danh sách Aqua...")
     aqua_args = [(aqua_list, "Aqua", i, modisAqua.size().getInfo()) for i in range(modisAqua.size().getInfo())]
     
     # Chạy cả hai bộ dữ liệu song song
     all_futures = []
     
-    for args in terra_args:
+    print("Đang gửi yêu cầu tải Terra...")
+    for i, args in enumerate(terra_args):
+        if i % 100 == 0:
+            print(f"  - Đã chuẩn bị {i}/{len(terra_args)} ảnh Terra")
         future = executor.submit(download_single_image, args)
         all_futures.append(future)
     
-    for args in aqua_args:
+    print("Đang gửi yêu cầu tải Aqua...")
+    for i, args in enumerate(aqua_args):
+        if i % 100 == 0:
+            print(f"  - Đã chuẩn bị {i}/{len(aqua_args)} ảnh Aqua")
         future = executor.submit(download_single_image, args)
         all_futures.append(future)
+    
+    print(f"Đã khởi tạo tất cả {len(all_futures)} tác vụ tải. Đang bắt đầu tải...")
     
     # Xử lý kết quả khi hoàn thành
     completed = 0
