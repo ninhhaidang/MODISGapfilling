@@ -42,6 +42,7 @@ print(f"Tổng số ảnh Aqua: {modisAqua.size().getInfo()}")
 def download_single_image(args):
     collection_list, collection_name, index, total_images = args
     try:
+        print(f"Bắt đầu tải {collection_name} ảnh {index+1}/{total_images}...")
         image = ee.Image(collection_list.get(index))
         image_date = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd').getInfo()
         
@@ -53,6 +54,7 @@ def download_single_image(args):
         day_filename = os.path.join(output_dir, f"{collection_name}_Day_{image_date}.tif")
         
         # Xuất ảnh ngày
+        print(f"  - Tải ảnh ngày {collection_name} {image_date}...")
         geemap.ee_export_image(
             ee_object=day_image,
             filename=day_filename,
@@ -66,6 +68,7 @@ def download_single_image(args):
         night_filename = os.path.join(output_dir, f"{collection_name}_Night_{image_date}.tif")
         
         # Xuất ảnh đêm
+        print(f"  - Tải ảnh đêm {collection_name} {image_date}...")
         geemap.ee_export_image(
             ee_object=night_image,
             filename=night_filename,
@@ -75,18 +78,20 @@ def download_single_image(args):
             file_per_band=False
         )
         
-        return f"Đã tải xuống {day_filename} và {night_filename}"
+        return f"✓ Hoàn thành: {collection_name} {image_date} (ngày + đêm)"
     except Exception as e:
-        return f"Lỗi khi tải ảnh {index} của {collection_name}: {e}"
+        return f"✗ Lỗi: {collection_name} ảnh {index+1}/{total_images}: {str(e)}"
 
 # Số luồng xử lý song song (điều chỉnh theo cấu hình máy)
 max_workers = 8  # Tăng lên vì CPU có 12 cores, 24 threads
 
-# Tải xuống dữ liệu Terra và Aqua song song
-print("Bắt đầu tải xuống song song...")
-start_time = time.time()
-
 # Tải Terra và Aqua đồng thời để tận dụng tối đa băng thông
+print("\n=== BẮT ĐẦU TẢI DỮ LIỆU ===")
+print(f"Thư mục lưu: {output_dir}")
+print(f"Số luồng xử lý: {max_workers*2}")
+print(f"Tổng số ảnh cần tải: Terra ({modisTerra.size().getInfo()}) + Aqua ({modisAqua.size().getInfo()})")
+print("===========================\n")
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers*2) as executor:
     # Chuẩn bị args cho tất cả các ảnh Terra và Aqua
     terra_args = [(terra_list, "Terra", i, modisTerra.size().getInfo()) for i in range(modisTerra.size().getInfo())]
@@ -111,6 +116,9 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers*2) as executo
         completed += 1
         result = future.result()
         print(f"[{completed}/{total}] {result}")
+        # Đảm bảo output được hiển thị ngay lập tức
+        import sys
+        sys.stdout.flush()
 
 end_time = time.time()
 print(f"Tổng thời gian tải: {end_time - start_time:.2f} giây")
