@@ -950,7 +950,6 @@ class MODISLSTProcessor:
 
         args_for_residual_smoothing_pool = [(residuals[i], self.config.RESIDUAL_UNIFORM_FILTER_SIZE) for i in range(num_images)]
         
-        # Sửa: Sử dụng _worker_nan_robust_uniform_filter thay vì self._nan_robust_uniform_filter
         smoothed_residuals_slices = []
         with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             # Áp dụng _nan_robust_uniform_filter 2 lần
