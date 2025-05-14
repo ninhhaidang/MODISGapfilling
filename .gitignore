@@ -1,10 +1,16 @@
 # Cac thu muc
 __pycache__/
 MODIS_LST_VN_RAW/
+venv/
 
 # Moi truong 
 .DS_Store
 
 # Linh tinh
-anhphuc.py
-anhphuc1.py
+A_global_seamless_1_km_resolution_daily_land_surfa.pdf
+ble.js
+check_tasks.py
+download_data.py
+MODIS_LST_Vietnam.js
+move.py
+read_coordinates.py

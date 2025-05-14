@@ -118,102 +118,7 @@ var finalNight = smoothedResidualsNightTemporal.map(function (image) {
 // ===== 11. Hiển thị bản đồ =====
 Map.centerObject(viet_nam, 6);
 
-// 11.1 Ảnh LST gốc (trước khi lọc)
-var modisTerraDayOriginalRaw = modisTerra.select('LST_Day_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisTerraNightOriginalRaw = modisTerra.select('LST_Night_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisAquaDayOriginalRaw = modisAqua.select('LST_Day_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisAquaNightOriginalRaw = modisAqua.select('LST_Night_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-Map.addLayer(modisTerraDayOriginalRaw, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Terra Day (Raw, °C)');
-Map.addLayer(modisTerraNightOriginalRaw, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Terra Night (Raw, °C)');
-Map.addLayer(modisAquaDayOriginalRaw, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Aqua Day (Raw, °C)');
-Map.addLayer(modisAquaNightOriginalRaw, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Aqua Night (Raw, °C)');
-
-// 11.2 Ảnh sau khi lọc QC
-var modisTerraDayFiltered = modisTerraFiltered.select('filtered_LST_Day_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisTerraNightFiltered = modisTerraFiltered.select('filtered_LST_Night_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisAquaDayFiltered = modisAquaFiltered.select('filtered_LST_Day_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-var modisAquaNightFiltered = modisAquaFiltered.select('filtered_LST_Night_1km')
-    .filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.multiply(0.02).subtract(273.15).clip(viet_nam);
-    });
-
-Map.addLayer(modisTerraDayFiltered, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Terra Day (Filtered, °C)');
-Map.addLayer(modisTerraNightFiltered, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Terra Night (Filtered, °C)');
-Map.addLayer(modisAquaDayFiltered, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Aqua Day (Filtered, °C)');
-Map.addLayer(modisAquaNightFiltered, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'MODIS Aqua Night (Filtered, °C)');
-
-// 11.3 Ảnh mean LST
-var meanDayClipped = meanDay.clip(viet_nam);
-var meanNightClipped = meanNight.clip(viet_nam);
-
-Map.addLayer(meanDayClipped, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Mean LST Day (°C)');
-Map.addLayer(meanNightClipped, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Mean LST Night (°C)');
-
-// 11.4 Ảnh residual (ảnh gốc - ảnh mean)
-var residualsDayDisplay = residualsDay.filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.clip(viet_nam);
-    });
-
-var residualsNightDisplay = residualsNight.filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.clip(viet_nam);
-    });
-
-Map.addLayer(residualsDayDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Residual Day (°C)');
-Map.addLayer(residualsNightDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Residual Night (°C)');
-
-// 11.5 Ảnh residual đã làm mượt
-var smoothedResidualsDayTemporalDisplay = smoothedResidualsDayTemporal.filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.clip(viet_nam);
-    });
-
-var smoothedResidualsNightTemporalDisplay = smoothedResidualsNightTemporal.filterDate(displayStart, displayEnd)
-    .map(function (image) {
-        return image.clip(viet_nam);
-    });
-
-Map.addLayer(smoothedResidualsDayTemporalDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Smoothed Residual Day (°C)');
-Map.addLayer(smoothedResidualsNightTemporalDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Smoothed Residual Night (°C)');
-
-// 11.6 Dữ liệu cuối cùng
+// Hiển thị ảnh LST final
 var finalDayDisplay = finalDay.filterDate(displayStart, displayEnd);
 var finalNightDisplay = finalNight.filterDate(displayStart, displayEnd);
 
@@ -221,187 +126,64 @@ Map.addLayer(finalDayDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'ye
 Map.addLayer(finalNightDisplay, { min: -5, max: 35, palette: ['blue', 'green', 'yellow', 'red'] }, 'Final LST Night (Gap-filled, °C)');
 
 // ===== 12. In thông tin kiểm tra =====
-print('MODIS Terra Day Original (Raw, °C):', modisTerraDayOriginalRaw);
-print('MODIS Terra Night Original (Raw, °C):', modisTerraNightOriginalRaw);
-print('MODIS Aqua Day Original (Raw, °C):', modisAquaDayOriginalRaw);
-print('MODIS Aqua Night Original (Raw, °C):', modisAquaNightOriginalRaw);
-print('MODIS Terra Day Filtered (°C):', modisTerraDayFiltered);
-print('MODIS Terra Night Filtered (°C):', modisTerraNightFiltered);
-print('MODIS Aqua Day Filtered (°C):', modisAquaDayFiltered);
-print('MODIS Aqua Night Filtered (°C):', modisAquaNightFiltered);
-print('Mean LST Day (°C):', meanDayClipped);
-print('Mean LST Night (°C):', meanNightClipped);
-print('Residual Day (°C):', residualsDayDisplay);
-print('Residual Night (°C):', residualsNightDisplay);
-print('Smoothed Residual Day (°C):', smoothedResidualsDayTemporalDisplay);
-print('Smoothed Residual Night (°C):', smoothedResidualsNightTemporalDisplay);
 print('Final Day LST (°C):', finalDayDisplay);
 print('Final Night LST (°C):', finalNightDisplay);
 
-// ===== 13. Xuất tất cả ảnh ra Google Drive =====
-// Lưu ý: Nếu vẫn gặp lỗi "payload size exceeds limit", có thể cần chia nhỏ khu vực (region) thành các phần
-// 13.1 Xuất ảnh gốc
-Export.image.toDrive({
-    image: modisTerraDayOriginalRaw.mean(),
-    description: 'MODIS_Terra_Day_Raw_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,  // Tăng scale lên 2km để giảm kích thước
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
+// ===== 13. Xuất ảnh đã gapfill cho 3 ngày cụ thể =====
+// Chia Việt Nam thành 3 vùng theo latitude
+var bounds = viet_nam.geometry().bounds();
+var west = bounds.coordinates().get(0).get(0);
+var south = bounds.coordinates().get(0).get(1);
+var east = bounds.coordinates().get(0).get(2);
+var north = bounds.coordinates().get(0).get(3);
+
+// Tính toán các dải vĩ độ
+var latRange = ee.Number(north).subtract(south);
+var latStep = latRange.divide(3);
+
+// Tạo danh sách các vùng
+var regions = ee.List.sequence(0, 2).map(function (i) {
+    var regionSouth = ee.Number(south).add(latStep.multiply(i));
+    var regionNorth = regionSouth.add(latStep);
+    var region = ee.Geometry.Rectangle([west, regionSouth, east, regionNorth]);
+    return region;
 });
 
-Export.image.toDrive({
-    image: modisTerraNightOriginalRaw.mean(),
-    description: 'MODIS_Terra_Night_Raw_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
+// Ngày cần xuất
+var exportDates = ['2020-01-01', '2020-01-15', '2020-02-01'];
 
-Export.image.toDrive({
-    image: modisAquaDayOriginalRaw.mean(),
-    description: 'MODIS_Aqua_Day_Raw_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
+// Xuất ảnh theo từng vùng và từng ngày
+regions.evaluate(function (regionList) {
+    regionList.forEach(function (region, regionIndex) {
+        exportDates.forEach(function (date) {
+            var start = ee.Date(date);
+            var end = start.advance(1, 'day');
 
-Export.image.toDrive({
-    image: modisAquaNightOriginalRaw.mean(),
-    description: 'MODIS_Aqua_Night_Raw_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
+            // Lọc ảnh theo ngày
+            var dayImage = finalDay.filterDate(start, end).mean();
+            var nightImage = finalNight.filterDate(start, end).mean();
 
-// 13.2 Xuất ảnh sau khi lọc QC
-Export.image.toDrive({
-    image: modisTerraDayFiltered.mean(),
-    description: 'MODIS_Terra_Day_Filtered_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
+            // Xuất ảnh ban ngày
+            Export.image.toDrive({
+                image: dayImage,
+                description: 'LST_Day_' + date + '_region' + (regionIndex + 1),
+                folder: 'LST_Vietnam_Daily',
+                region: region,
+                scale: 1000,
+                maxPixels: 1e13,
+                crs: 'EPSG:4326'
+            });
 
-Export.image.toDrive({
-    image: modisTerraNightFiltered.mean(),
-    description: 'MODIS_Terra_Night_Filtered_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: modisAquaDayFiltered.mean(),
-    description: 'MODIS_Aqua_Day_Filtered_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: modisAquaNightFiltered.mean(),
-    description: 'MODIS_Aqua_Night_Filtered_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-// 13.3 Xuất ảnh mean LST
-Export.image.toDrive({
-    image: meanDayClipped,
-    description: 'Mean_LST_Day_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: meanNightClipped,
-    description: 'Mean_LST_Night_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-// 13.4 Xuất ảnh residual
-Export.image.toDrive({
-    image: residualsDayDisplay.mean(),
-    description: 'Residual_Day_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: residualsNightDisplay.mean(),
-    description: 'Residual_Night_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-// 13.5 Xuất ảnh residual đã làm mượt
-Export.image.toDrive({
-    image: smoothedResidualsDayTemporalDisplay.mean(),
-    description: 'Smoothed_Residual_Day_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: smoothedResidualsNightTemporalDisplay.mean(),
-    description: 'Smoothed_Residual_Night_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-// 13.6 Xuất dữ liệu cuối cùng
-Export.image.toDrive({
-    image: finalDayDisplay.mean(),
-    description: 'Final_LST_Day_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
-});
-
-Export.image.toDrive({
-    image: finalNightDisplay.mean(),
-    description: 'Final_LST_Night_2020_01',
-    folder: 'LST_Vietnam',
-    region: viet_nam,
-    scale: 1000,
-    maxPixels: 1e13,
-    crs: 'EPSG:4326'
+            // Xuất ảnh ban đêm
+            Export.image.toDrive({
+                image: nightImage,
+                description: 'LST_Night_' + date + '_region' + (regionIndex + 1),
+                folder: 'LST_Vietnam_Daily',
+                region: region,
+                scale: 1000,
+                maxPixels: 1e13,
+                crs: 'EPSG:4326'
+            });
+        });
+    });
 });
