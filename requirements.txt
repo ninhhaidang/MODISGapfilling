@@ -3,3 +3,16 @@ rasterio
 numpy
 pandas
 scipy 
+psutil>=5.9.0
+numba>=0.53.0
+
+# GPU Support (tùy chọn) - Cài đặt CuPy cho phiên bản CUDA tương ứng
+# Chạy nvidia-smi để kiểm tra phiên bản CUDA, sau đó thay thế "x" bằng số phiên bản
+# Ví dụ: cupy-cuda116 cho CUDA 11.6, cupy-cuda117 cho CUDA 11.7, v.v.
+cupy-cuda12x; platform_system=="Windows"
+
+# Thư viện MKL (tùy chọn) - Chỉ cần thiết nếu muốn tăng tốc các phép toán NumPy với Intel CPU
+mkl>=2021.4.0; platform_system=="Windows"
+
+# Các gói bổ sung (nếu cần)
+glob2 

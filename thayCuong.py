@@ -13,6 +13,17 @@ from functools import partial # Hữu ích cho việc truyền đối số vào 
 import gc # Để quản lý bộ nhớ (tùy chọn)
 import psutil # Thêm thư viện để theo dõi và quản lý tài nguyên
 import warnings
+import math
+
+# Thêm Numba để tối ưu hóa các vòng lặp
+try:
+    import numba
+    from numba import jit, prange
+    HAS_NUMBA = True
+    print("Numba optimization available!")
+except ImportError:
+    HAS_NUMBA = False
+    print("Numba not available. Some functions will run slower.")
 
 # Thêm hỗ trợ GPU nếu có thể
 try:
@@ -251,6 +262,108 @@ def _worker_filter_outliers(data_slice_and_config_tuple):
     filtered_slice[outlier_mask_slice & valid_mask_slice] = np.nan
     return filtered_slice
 
+# Thêm hàm Numba-optimized cho temporal gap filling
+if HAS_NUMBA:
+    @jit(nopython=True, parallel=False)
+    def _numba_temporal_gapfill_pixel(time_series, temporal_neighbor_days, temporal_min_neighbors):
+        """Tối ưu hóa với Numba: Nội suy thiếu dữ liệu trong một chuỗi thời gian pixel"""
+        if np.all(~np.isnan(time_series)):  # Nếu không có giá trị NaN
+            return time_series
+
+        result = np.copy(time_series)
+        valid_idx = np.where(~np.isnan(time_series))[0]
+        missing_idx = np.where(np.isnan(time_series))[0]
+
+        if len(valid_idx) < 2 or len(missing_idx) == 0:
+            return result
+
+        min_valid_time = np.min(valid_idx)
+        max_valid_time = np.max(valid_idx)
+
+        for idx_miss in missing_idx:
+            if min_valid_time < idx_miss < max_valid_time:
+                relevant_neighbors = []
+                relevant_values = []
+                
+                # Tìm các lân cận có giá trị
+                for idx in valid_idx:
+                    if abs(idx - idx_miss) <= temporal_neighbor_days:
+                        relevant_neighbors.append(idx)
+                        relevant_values.append(time_series[idx])
+                
+                if len(relevant_neighbors) >= temporal_min_neighbors:
+                    # Sắp xếp lân cận để nội suy chính xác
+                    sorted_indices = np.argsort(relevant_neighbors)
+                    sorted_neighbors = np.array([relevant_neighbors[i] for i in sorted_indices])
+                    sorted_values = np.array([relevant_values[i] for i in sorted_indices])
+                    
+                    # Kiểm tra xem idx_miss có nằm trong phạm vi lân cận không
+                    if sorted_neighbors[0] <= idx_miss <= sorted_neighbors[-1]:
+                        # Nội suy tuyến tính
+                        result[idx_miss] = np.interp(idx_miss, sorted_neighbors, sorted_values)
+        
+        return result
+
+    @jit(nopython=True, parallel=True)
+    def _numba_temporal_gapfill_block(data_block, temporal_neighbor_days, temporal_min_neighbors):
+        """Tối ưu hóa với Numba: Xử lý song song nhiều pixel trong một khối"""
+        rows, cols = data_block.shape[1:3]
+        result = np.copy(data_block)
+        
+        for i in prange(rows):
+            for j in prange(cols):
+                result[:, i, j] = _numba_temporal_gapfill_pixel(
+                    data_block[:, i, j], 
+                    temporal_neighbor_days, 
+                    temporal_min_neighbors
+                )
+        
+        return result
+
+# Thêm hàm xử lý block cho temporal gap filling
+def _process_temporal_block(args):
+    """Xử lý một khối dữ liệu trong temporal_gapfill"""
+    block, config = args
+    if HAS_NUMBA:
+        return _numba_temporal_gapfill_block(
+            block, 
+            config.TEMPORAL_NEIGHBOR_DAYS, 
+            config.TEMPORAL_MIN_NEIGHBORS
+        )
+    else:
+        # Fallback không dùng Numba - xử lý tuần tự
+        result = np.copy(block)
+        for i in range(block.shape[1]):
+            for j in range(block.shape[2]):
+                ts = block[:, i, j]
+                if not np.any(np.isnan(ts)):
+                    continue
+
+                valid_idx = np.where(~np.isnan(ts))[0]
+                missing_idx = np.where(np.isnan(ts))[0]
+
+                if len(valid_idx) < 2 or len(missing_idx) == 0:
+                    continue
+                
+                min_valid_time = np.min(valid_idx)
+                max_valid_time = np.max(valid_idx)
+
+                for idx_miss in missing_idx:
+                    if min_valid_time < idx_miss < max_valid_time:
+                        relevant_neighbors_indices = valid_idx[np.abs(valid_idx - idx_miss) <= config.TEMPORAL_NEIGHBOR_DAYS]
+                        if len(relevant_neighbors_indices) >= config.TEMPORAL_MIN_NEIGHBORS:
+                            sorted_relevant_neighbors = np.sort(relevant_neighbors_indices)
+                            if sorted_relevant_neighbors.size > 0 and \
+                               np.min(sorted_relevant_neighbors) <= idx_miss <= np.max(sorted_relevant_neighbors):
+                                try:
+                                    unique_neighbors, unique_indices = np.unique(sorted_relevant_neighbors, return_index=True)
+                                    if len(unique_neighbors) >=2:
+                                        result[idx_miss, i, j] = np.interp(idx_miss, unique_neighbors, ts[unique_neighbors])
+                                except Exception as e:
+                                    # Silent exception, leave as NaN
+                                    pass
+        return result
+
 # --- LỚP MODISLSTProcessor ĐÃ ĐƯỢC SỬA ĐỔI ---
 class MODISLSTProcessor:
     def __init__(self, config=None, num_workers=None):
@@ -264,10 +377,10 @@ class MODISLSTProcessor:
         
         print(f"Initializing MODISLSTProcessor with {self.num_workers} workers and GPU={self.use_gpu}")
         
-        # Cấu hình rasterio
+        # Cấu hình rasterio - Sửa: chuyển đổi RASTERIO_BUFFER_SIZE thành integer
         rasterio_options = {
-            'GDAL_CACHEMAX': '1024',
-            'RASTERIO_BUFFER_SIZE': str(self.config.RASTERIO_BUFFER_SIZE)
+            'GDAL_CACHEMAX': 1024,  # Số nguyên thay vì chuỗi
+            'RASTERIO_BUFFER_SIZE': int(self.config.RASTERIO_BUFFER_SIZE)  # Chuyển đổi thành integer
         }
         rasterio.Env(**rasterio_options).__enter__()
         
@@ -348,44 +461,98 @@ class MODISLSTProcessor:
 
     def temporal_gapfill(self, data_cube):
         """Lấp đầy khoảng trống (NaN) trong chuỗi thời gian bằng nội suy tuyến tính.
-        Hàm này khó song song hóa hiệu quả ở mức pixel nếu không dùng Numba hoặc Cython
-        do sự phụ thuộc vào các giá trị lân cận trong cùng một chuỗi thời gian của pixel.
-        Giữ nguyên logic tuần tự cho hàm này, nhưng tối ưu hóa bên trong nếu có thể.
+        Phiên bản cải tiến: Chia dữ liệu thành các khối và xử lý song song.
         """
-        if data_cube is None: return None
-        # Cân nhắc sử dụng apply_along_axis nếu logic nội suy có thể vector hóa
-        # Hiện tại, giữ vòng lặp để dễ hiểu và đảm bảo tính đúng đắn.
-        # Nếu đây là điểm nghẽn lớn, xem xét Numba cho các vòng lặp này.
-        for i in range(data_cube.shape[1]): # row
-            for j in range(data_cube.shape[2]): # col
-                ts = data_cube[:, i, j]
-                if not np.any(np.isnan(ts)): continue
+        if data_cube is None or data_cube.shape[0] == 0:
+            print("Warning: Empty data cube in temporal_gapfill")
+            return data_cube
 
-                valid_idx = np.where(~np.isnan(ts))[0]
-                missing_idx = np.where(np.isnan(ts))[0]
-
-                if len(valid_idx) < 2 or len(missing_idx) == 0: continue
+        print(f"Starting temporal gap filling on data cube shape {data_cube.shape}...")
+        start_time = datetime.now()
+        
+        # Xác định số lượng khối có thể xử lý dựa trên bộ nhớ có sẵn
+        num_time_steps, rows, cols = data_cube.shape
+        total_pixels = rows * cols
+        
+        # Tính số lượng khối để cân bằng giữa hiệu suất và bộ nhớ
+        # Mặc định chia thành 8-12 khối tùy thuộc vào RAM
+        try:
+            mem = psutil.virtual_memory()
+            free_mem_gb = (mem.available / (1024**3))
+            # Mỗi phần tử float32 chiếm 4 bytes
+            data_size_gb = (data_cube.size * 4) / (1024**3)
+            
+            # Heuristic để tính số khối cần thiết (có thể điều chỉnh)
+            num_blocks = max(8, min(24, int(data_size_gb / (free_mem_gb * 0.2))))
+            print(f"Data size: {data_size_gb:.2f} GB, Free memory: {free_mem_gb:.2f} GB")
+            print(f"Dividing into {num_blocks} blocks for temporal gap filling")
+        except:
+            # Fallback nếu không thể đo bộ nhớ
+            num_blocks = 12
+            print(f"Using default {num_blocks} blocks for temporal gap filling")
+        
+        # Sử dụng multithreading nếu có Numba, multiprocessing nếu không
+        if HAS_NUMBA:
+            print("Using Numba-optimized temporal gap filling")
+            block_rows = math.ceil(rows / num_blocks)
+            result_cube = np.copy(data_cube)
+            
+            for i in range(0, rows, block_rows):
+                end_i = min(i + block_rows, rows)
+                print(f"Processing block rows {i} to {end_i}...")
                 
-                min_valid_time = np.min(valid_idx)
-                max_valid_time = np.max(valid_idx)
-
-                for idx_miss in missing_idx:
-                    if min_valid_time < idx_miss < max_valid_time:
-                        relevant_neighbors_indices = valid_idx[np.abs(valid_idx - idx_miss) <= self.config.TEMPORAL_NEIGHBOR_DAYS]
-                        if len(relevant_neighbors_indices) >= self.config.TEMPORAL_MIN_NEIGHBORS:
-                            sorted_relevant_neighbors = np.sort(relevant_neighbors_indices)
-                            # Đảm bảo idx_miss nằm trong khoảng của các lân cận này để nội suy
-                            if sorted_relevant_neighbors.size > 0 and \
-                               np.min(sorted_relevant_neighbors) <= idx_miss <= np.max(sorted_relevant_neighbors):
-                                try:
-                                    # Lọc các điểm trùng lặp trong sorted_relevant_neighbors trước khi nội suy
-                                    unique_neighbors, unique_indices = np.unique(sorted_relevant_neighbors, return_index=True)
-                                    if len(unique_neighbors) >=2: # Cần ít nhất 2 điểm để nội suy
-                                        data_cube[idx_miss, i, j] = np.interp(idx_miss, unique_neighbors, ts[unique_neighbors])
-                                except Exception as e:
-                                    print(f"Error during temporal interpolation for pixel ({i},{j}) at time {idx_miss}: {e}")
-                                    # Có thể gán NaN hoặc bỏ qua
-        return data_cube
+                block = data_cube[:, i:end_i, :]
+                if HAS_NUMBA:
+                    # Khối được xử lý với tối ưu Numba
+                    result_block = _numba_temporal_gapfill_block(
+                        block, 
+                        self.config.TEMPORAL_NEIGHBOR_DAYS, 
+                        self.config.TEMPORAL_MIN_NEIGHBORS
+                    )
+                else:
+                    # Fallback không dùng Numba
+                    result_block = _process_temporal_block((block, self.config))
+                
+                result_cube[:, i:end_i, :] = result_block
+                
+                # Báo cáo tiến độ
+                progress = (end_i / rows) * 100
+                print(f"Temporal gap filling progress: {progress:.1f}%")
+                
+                # Giải phóng bộ nhớ
+                del block, result_block
+                gc.collect()
+        else:
+            print("Using multiprocessing for temporal gap filling")
+            # Chia thành các khối hàng
+            block_rows = math.ceil(rows / num_blocks)
+            blocks = []
+            
+            for i in range(0, rows, block_rows):
+                end_i = min(i + block_rows, rows)
+                block = data_cube[:, i:end_i, :]
+                blocks.append((block, self.config))
+            
+            # Xử lý song song các khối với multiprocessing
+            with multiprocessing.Pool(processes=min(num_blocks, self.num_workers)) as pool:
+                processed_blocks = pool.map(_process_temporal_block, blocks)
+            
+            # Kết hợp kết quả
+            result_cube = np.copy(data_cube)
+            for i, block_result in enumerate(processed_blocks):
+                start_i = i * block_rows
+                end_i = min(start_i + block_rows, rows)
+                result_cube[:, start_i:end_i, :] = block_result
+                
+            # Giải phóng bộ nhớ
+            del blocks, processed_blocks
+            gc.collect()
+        
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        print(f"Temporal gap filling completed in {duration:.2f} seconds")
+        
+        return result_cube
     
     def filter_outliers(self, data_array):
         """Lọc giá trị ngoại lai, giữ NaN. Có thể song song hóa theo từng ảnh."""
@@ -904,6 +1071,9 @@ def main():
     mem = psutil.virtual_memory()
     print(f"RAM: {mem.total / (1024**3):.2f} GB total")
     print(f"GPU: {'Available' if HAS_GPU else 'Not available'}")
+    
+    # Hiển thị thêm thông tin về tối ưu hóa
+    print(f"Numba optimization: {'Available' if HAS_NUMBA else 'Not available'}")
     
     # Khởi tạo processor với cấu hình đã tối ưu
     processor = MODISLSTProcessor(config=config)
