@@ -1,5 +1,60 @@
-import ee
 import os
+import sys
+import logging
+import warnings
+
+# Cấu hình logging chi tiết
+logging.basicConfig(
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename='modis_processing.log',  # Log vào file thay vì console
+    filemode='w'
+)
+
+# Thiết lập trực tiếp để tắt mọi thông báo về CuPy, Numba và MKL
+os.environ['CUPY_LOG_LEVEL'] = '30'  # WARNING level
+os.environ['NUMBA_WARNINGS'] = '0'
+os.environ['NUMBA_DEBUG'] = '0'
+os.environ['MKL_VERBOSE'] = '0'
+os.environ['PYTHONWARNINGS'] = 'ignore'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Tắt TensorFlow warnings nếu có
+
+# Tắt tất cả warnings
+warnings.filterwarnings('ignore')
+
+# Lưu trữ stdout gốc
+original_stdout = sys.stdout
+
+# Tạo class để lọc output
+class OutputFilter:
+    def __init__(self):
+        self.blocked_messages = [
+            "GPU support enabled with CuPy",
+            "MKL multi-threading enabled with",
+            "Numba optimization available"
+        ]
+        self.shown_messages = set()
+    
+    def write(self, text):
+        # Chỉ cho phép hiển thị thông báo một lần
+        should_print = True
+        for msg in self.blocked_messages:
+            if msg in text and msg in self.shown_messages:
+                should_print = False
+                break
+            elif msg in text:
+                self.shown_messages.add(msg)
+        
+        if should_print:
+            original_stdout.write(text)
+    
+    def flush(self):
+        original_stdout.flush()
+
+# Áp dụng bộ lọc
+sys.stdout = OutputFilter()
+
+# Sau đó tiếp tục với các import thông thường
 import datetime
 import rasterio
 import numpy as np
@@ -12,20 +67,10 @@ import multiprocessing # Thêm thư viện multiprocessing
 from functools import partial # Hữu ích cho việc truyền đối số vào pool.map
 import gc # Để quản lý bộ nhớ (tùy chọn)
 import psutil # Thêm thư viện để theo dõi và quản lý tài nguyên
-import warnings
 import math
-import logging
-
-# Đặt biến môi trường để loại bỏ thông báo import lặp lại
-os.environ['NUMBA_WARNINGS'] = '0'
-os.environ['CUPY_LOG_LEVEL'] = '30'  # WARNING level
-os.environ['MKL_VERBOSE'] = '0'
 
 # Biến toàn cục để tránh hiển thị trùng lặp thông báo
 _VERBOSE_MODE = True # Đặt False để giảm bớt thông báo
-_DISPLAYED_NUMBA_MSG = False
-_DISPLAYED_CUPY_MSG = False
-_DISPLAYED_MKL_MSG = False
 
 # Hàm để hiển thị thông báo, chỉ hiển thị khi cần thiết
 def log_message(message, force=False, level="INFO"):
@@ -38,14 +83,44 @@ def log_message(message, force=False, level="INFO"):
     elif level == "ERROR":
         print(f"ERROR: {message}")
 
+# Hàm khởi tạo cho tiến trình con
+def _init_worker():
+    """Khởi tạo môi trường im lặng cho worker process"""
+    import os
+    import sys
+    import warnings
+    
+    # Tắt tất cả logging và warning trong worker
+    import logging
+    logging.basicConfig(level=logging.CRITICAL)
+    
+    # Thiết lập các biến môi trường
+    os.environ['CUPY_LOG_LEVEL'] = '30'
+    os.environ['NUMBA_WARNINGS'] = '0'
+    os.environ['NUMBA_DEBUG'] = '0'
+    os.environ['MKL_VERBOSE'] = '0'
+    os.environ['PYTHONWARNINGS'] = 'ignore'
+    
+    # Tắt warnings
+    warnings.filterwarnings('ignore')
+    
+    # Đổi hướng stdout để ẩn hết thông báo
+    class NullWriter:
+        def write(self, text): pass
+        def flush(self): pass
+    
+    # Chỉ đổi hướng stdout khi không phải main process
+    if multiprocessing.current_process().name != 'MainProcess':
+        sys.stdout = NullWriter()
+        sys.stderr = NullWriter()
+
 # Thêm Numba để tối ưu hóa các vòng lặp
 try:
     import numba
     from numba import jit, prange
+    numba.config.NUMBA_DISABLE_JIT = 0
     HAS_NUMBA = True
-    if not _DISPLAYED_NUMBA_MSG:
-        log_message("Numba optimization available!", force=True)
-        _DISPLAYED_NUMBA_MSG = True
+    log_message("Numba optimization available!", force=True)
 except ImportError:
     HAS_NUMBA = False
     log_message("Numba not available. Some functions will run slower.", force=True)
@@ -55,9 +130,7 @@ try:
     import cupy as cp
     import cupyx.scipy.ndimage as cu_ndimage
     HAS_GPU = True
-    if not _DISPLAYED_CUPY_MSG:
-        log_message("GPU support enabled with CuPy!", force=True)
-        _DISPLAYED_CUPY_MSG = True
+    log_message("GPU support enabled with CuPy!", force=True)
 except ImportError:
     HAS_GPU = False
     log_message("GPU support not available. Using CPU only.", force=True)
@@ -67,9 +140,7 @@ try:
     import mkl
     threads_to_use = 24  # Đặt theo số threads của CPU E5-2678 v3
     mkl.set_num_threads(threads_to_use)
-    if not _DISPLAYED_MKL_MSG:
-        log_message(f"MKL multi-threading enabled with {mkl.get_max_threads()} threads", force=True)
-        _DISPLAYED_MKL_MSG = True
+    log_message(f"MKL multi-threading enabled with {mkl.get_max_threads()} threads", force=True)
 except ImportError:
     # Nếu không có MKL, thử với OpenBLAS
     try:
@@ -392,22 +463,6 @@ def _process_temporal_block(args):
                                     # Silent exception, leave as NaN
                                     pass
         return result
-
-# Hàm khởi tạo cho tiến trình con, sẽ được gọi khi worker process được tạo
-def _init_worker():
-    # Tắt tất cả các thông báo trong worker process
-    import os
-    os.environ['NUMBA_WARNINGS'] = '0'
-    os.environ['CUPY_LOG_LEVEL'] = '30'
-    os.environ['MKL_VERBOSE'] = '0'
-    
-    # Thiết lập logging để không hiển thị thông báo
-    import logging
-    logging.basicConfig(level=logging.ERROR)
-    
-    # Tắt các cảnh báo
-    import warnings
-    warnings.filterwarnings('ignore')
 
 # --- LỚP MODISLSTProcessor ĐÃ ĐƯỢC SỬA ĐỔI ---
 class MODISLSTProcessor:
