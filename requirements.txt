@@ -1,0 +1,5 @@
+ee
+rasterio
+numpy
+pandas
+scipy 
