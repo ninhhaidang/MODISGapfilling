@@ -950,18 +950,21 @@ class MODISLSTProcessor:
 
         args_for_residual_smoothing_pool = [(residuals[i], self.config.RESIDUAL_UNIFORM_FILTER_SIZE) for i in range(num_images)]
         
+        # Sử dụng _worker_nan_robust_uniform_filter thay vì self._nan_robust_uniform_filter
         smoothed_residuals_slices = []
         with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             # Áp dụng _nan_robust_uniform_filter 2 lần
             log_message("First pass of residual smoothing...", force=True)
-            temp_smoothed_once = pool.map(self._nan_robust_uniform_filter, args_for_residual_smoothing_pool)
+            # Sửa: Sử dụng _worker_nan_robust_uniform_filter thay vì self._nan_robust_uniform_filter
+            temp_smoothed_once = pool.map(_worker_nan_robust_uniform_filter, args_for_residual_smoothing_pool)
             
             # Cập nhật args cho lần chạy thứ 2
             args_for_second_pass = [(s, self.config.RESIDUAL_UNIFORM_FILTER_SIZE) for s in temp_smoothed_once if s is not None]
             # Chỉ xử lý những slice không None
             if args_for_second_pass:
                 log_message("Second pass of residual smoothing...", force=True)
-                smoothed_residuals_slices = pool.map(self._nan_robust_uniform_filter, args_for_second_pass)
+                # Sửa: Sử dụng _worker_nan_robust_uniform_filter thay vì self._nan_robust_uniform_filter
+                smoothed_residuals_slices = pool.map(_worker_nan_robust_uniform_filter, args_for_second_pass)
             else: # Nếu tất cả là None sau lần đầu
                  smoothed_residuals_slices = temp_smoothed_once # Giữ nguyên kết quả None
         
