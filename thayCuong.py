@@ -15,44 +15,67 @@ import psutil # Thêm thư viện để theo dõi và quản lý tài nguyên
 import warnings
 import math
 
+# Biến toàn cục để tránh hiển thị trùng lặp thông báo
+_VERBOSE_MODE = True # Đặt False để giảm bớt thông báo
+_DISPLAYED_NUMBA_MSG = False
+_DISPLAYED_CUPY_MSG = False
+_DISPLAYED_MKL_MSG = False
+
+# Hàm để hiển thị thông báo, chỉ hiển thị khi cần thiết
+def log_message(message, force=False, level="INFO"):
+    if not _VERBOSE_MODE and not force:
+        return
+    if level == "INFO":
+        print(message)
+    elif level == "WARNING":
+        print(f"WARNING: {message}")
+    elif level == "ERROR":
+        print(f"ERROR: {message}")
+
 # Thêm Numba để tối ưu hóa các vòng lặp
 try:
     import numba
     from numba import jit, prange
     HAS_NUMBA = True
-    print("Numba optimization available!")
+    if not _DISPLAYED_NUMBA_MSG:
+        log_message("Numba optimization available!", force=True)
+        _DISPLAYED_NUMBA_MSG = True
 except ImportError:
     HAS_NUMBA = False
-    print("Numba not available. Some functions will run slower.")
+    log_message("Numba not available. Some functions will run slower.", force=True)
 
 # Thêm hỗ trợ GPU nếu có thể
 try:
     import cupy as cp
     import cupyx.scipy.ndimage as cu_ndimage
     HAS_GPU = True
-    print("GPU support enabled with CuPy!")
+    if not _DISPLAYED_CUPY_MSG:
+        log_message("GPU support enabled with CuPy!", force=True)
+        _DISPLAYED_CUPY_MSG = True
 except ImportError:
     HAS_GPU = False
-    print("GPU support not available. Using CPU only.")
+    log_message("GPU support not available. Using CPU only.", force=True)
 
 # Cấu hình để sử dụng đa luồng với NumPy (nếu có Intel MKL)
 try:
     import mkl
-    mkl.set_num_threads(24)  # Đặt theo số threads của CPU E5-2678 v3
-    print(f"MKL multi-threading enabled with {mkl.get_max_threads()} threads")
+    threads_to_use = 24  # Đặt theo số threads của CPU E5-2678 v3
+    mkl.set_num_threads(threads_to_use)
+    if not _DISPLAYED_MKL_MSG:
+        log_message(f"MKL multi-threading enabled with {mkl.get_max_threads()} threads", force=True)
+        _DISPLAYED_MKL_MSG = True
 except ImportError:
     # Nếu không có MKL, thử với OpenBLAS
     try:
-        np.show_config()  # Hiển thị cấu hình NumPy để kiểm tra
         threads_to_use = 24  # Đặt theo số threads của E5-2678 v3
         os.environ["OMP_NUM_THREADS"] = str(threads_to_use)
         os.environ["OPENBLAS_NUM_THREADS"] = str(threads_to_use)
         os.environ["MKL_NUM_THREADS"] = str(threads_to_use)
         os.environ["VECLIB_MAXIMUM_THREADS"] = str(threads_to_use)
         os.environ["NUMEXPR_NUM_THREADS"] = str(threads_to_use)
-        print(f"NumPy multi-threading configured with {threads_to_use} threads")
+        log_message(f"NumPy multi-threading configured with {threads_to_use} threads", force=True)
     except:
-        print("Could not configure NumPy multi-threading")
+        log_message("Could not configure NumPy multi-threading", level="WARNING")
 
 # --- LỚP CONFIG GIỮ NGUYÊN VỚI CÁC THAY ĐỔI ---
 class Config:
@@ -123,8 +146,8 @@ class Config:
             if logical_cores and physical_cores:
                 # Sử dụng tất cả các logical cores ngoại trừ 1-2 cho hệ thống
                 cls.NUM_CPU_WORKERS = max(1, logical_cores - 2)
-                print(f"System has {physical_cores} physical cores, {logical_cores} logical cores")
-                print(f"Using {cls.NUM_CPU_WORKERS} worker processes")
+                log_message(f"System has {physical_cores} physical cores, {logical_cores} logical cores", force=True)
+                log_message(f"Using {cls.NUM_CPU_WORKERS} worker processes", force=True)
             else:
                 cls.NUM_CPU_WORKERS = 22  # Giá trị mặc định cho E5-2678 v3 (24 threads - 2)
         except:
@@ -134,7 +157,7 @@ class Config:
         try:
             mem = psutil.virtual_memory()
             total_ram_gb = mem.total / (1024 ** 3)
-            print(f"System has {total_ram_gb:.1f} GB RAM")
+            log_message(f"System has {total_ram_gb:.1f} GB RAM", force=True)
             
             # Tính toán kích thước chunk dựa trên RAM
             if total_ram_gb > 16:
@@ -142,7 +165,7 @@ class Config:
             
             # Đặt giới hạn sử dụng RAM
             usable_ram = (mem.total * cls.MEMORY_LIMIT_PERCENT) // 100
-            print(f"Will use up to {cls.MEMORY_LIMIT_PERCENT}% RAM ({usable_ram/(1024**3):.1f} GB)")
+            log_message(f"Will use up to {cls.MEMORY_LIMIT_PERCENT}% RAM ({usable_ram/(1024**3):.1f} GB)", force=True)
         except:
             pass
         
@@ -375,7 +398,7 @@ class MODISLSTProcessor:
         self.num_workers = num_workers if num_workers is not None else self.config.NUM_CPU_WORKERS
         self.use_gpu = self.config.USE_GPU and HAS_GPU
         
-        print(f"Initializing MODISLSTProcessor with {self.num_workers} workers and GPU={self.use_gpu}")
+        log_message(f"Initializing MODISLSTProcessor with {self.num_workers} workers and GPU={self.use_gpu}")
         
         # Cấu hình rasterio - Sửa: chuyển đổi RASTERIO_BUFFER_SIZE thành integer
         rasterio_options = {
@@ -395,6 +418,7 @@ class MODISLSTProcessor:
     def _nan_robust_uniform_filter(self, data, size):
         if self.use_gpu:
             try:
+                # Không hiển thị thông báo ở đây để tránh lặp lại
                 # Chuyển dữ liệu lên GPU
                 gpu_data = cp.asarray(data)
                 nan_mask = cp.isnan(gpu_data)
@@ -415,7 +439,8 @@ class MODISLSTProcessor:
                 # Chuyển kết quả trở lại CPU
                 return cp.asnumpy(result)
             except Exception as e:
-                warnings.warn(f"GPU processing failed with error: {e}. Falling back to CPU.")
+                # Chỉ hiển thị cảnh báo một lần
+                warnings.warn(f"GPU processing failed with error: {e}. Falling back to CPU.", stacklevel=2)
                 return _worker_nan_robust_uniform_filter((data, size))
         else:
             return _worker_nan_robust_uniform_filter((data, size))
@@ -464,10 +489,10 @@ class MODISLSTProcessor:
         Phiên bản cải tiến: Chia dữ liệu thành các khối và xử lý song song.
         """
         if data_cube is None or data_cube.shape[0] == 0:
-            print("Warning: Empty data cube in temporal_gapfill")
+            log_message("Warning: Empty data cube in temporal_gapfill", level="WARNING")
             return data_cube
 
-        print(f"Starting temporal gap filling on data cube shape {data_cube.shape}...")
+        log_message(f"Starting temporal gap filling on data cube shape {data_cube.shape}...", force=True)
         start_time = datetime.now()
         
         # Xác định số lượng khối có thể xử lý dựa trên bộ nhớ có sẵn
@@ -484,22 +509,24 @@ class MODISLSTProcessor:
             
             # Heuristic để tính số khối cần thiết (có thể điều chỉnh)
             num_blocks = max(8, min(24, int(data_size_gb / (free_mem_gb * 0.2))))
-            print(f"Data size: {data_size_gb:.2f} GB, Free memory: {free_mem_gb:.2f} GB")
-            print(f"Dividing into {num_blocks} blocks for temporal gap filling")
+            log_message(f"Data size: {data_size_gb:.2f} GB, Free memory: {free_mem_gb:.2f} GB")
+            log_message(f"Dividing into {num_blocks} blocks for temporal gap filling")
         except:
             # Fallback nếu không thể đo bộ nhớ
             num_blocks = 12
-            print(f"Using default {num_blocks} blocks for temporal gap filling")
+            log_message(f"Using default {num_blocks} blocks for temporal gap filling")
         
         # Sử dụng multithreading nếu có Numba, multiprocessing nếu không
         if HAS_NUMBA:
-            print("Using Numba-optimized temporal gap filling")
+            log_message("Using Numba-optimized temporal gap filling", force=True)
             block_rows = math.ceil(rows / num_blocks)
             result_cube = np.copy(data_cube)
             
             for i in range(0, rows, block_rows):
                 end_i = min(i + block_rows, rows)
-                print(f"Processing block rows {i} to {end_i}...")
+                # Không hiển thị thông báo lặp lại cho mỗi block
+                if i % (3 * block_rows) == 0:  # Hiển thị thông báo mỗi 3 block
+                    log_message(f"Processing block rows {i} to {end_i}...")
                 
                 block = data_cube[:, i:end_i, :]
                 if HAS_NUMBA:
@@ -515,15 +542,16 @@ class MODISLSTProcessor:
                 
                 result_cube[:, i:end_i, :] = result_block
                 
-                # Báo cáo tiến độ
+                # Báo cáo tiến độ, nhưng không quá thường xuyên
                 progress = (end_i / rows) * 100
-                print(f"Temporal gap filling progress: {progress:.1f}%")
+                if progress % 20 <= (block_rows / rows * 100):  # Báo cáo khoảng mỗi 20%
+                    log_message(f"Temporal gap filling progress: {progress:.1f}%", force=True)
                 
                 # Giải phóng bộ nhớ
                 del block, result_block
                 gc.collect()
         else:
-            print("Using multiprocessing for temporal gap filling")
+            log_message("Using multiprocessing for temporal gap filling", force=True)
             # Chia thành các khối hàng
             block_rows = math.ceil(rows / num_blocks)
             blocks = []
@@ -550,7 +578,7 @@ class MODISLSTProcessor:
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
-        print(f"Temporal gap filling completed in {duration:.2f} seconds")
+        log_message(f"Temporal gap filling completed in {duration:.2f} seconds", force=True)
         
         return result_cube
     
@@ -988,45 +1016,45 @@ class MODISLSTProcessor:
         # Giải phóng bộ nhớ trước khi bắt đầu xử lý
         gc.collect()
         
-        print(f"\nLOADING DATA: {start_date} to {end_date}")
+        log_message(f"\nLOADING DATA: {start_date} to {end_date}", force=True)
         day_files, night_files = self.load_modis_data(start_date, end_date)
         
-        print("\nSYSTEM RESOURCE USAGE:")
+        log_message("\nSYSTEM RESOURCE USAGE:", force=True)
         self._print_resource_usage()
         
         day_results, night_results = None, None
         
         if day_files:
-            print("\n--- Processing DAY data ---")
+            log_message("\n--- Processing DAY data ---", force=True)
             day_results = self.process_files(day_files, 'Day')
             # Đảm bảo giải phóng bộ nhớ sau khi xử lý xong dữ liệu ban ngày
             gc.collect()
             if self.use_gpu:
                 try:
                     cp.get_default_memory_pool().free_all_blocks()
-                    print("GPU memory cleared after day processing")
+                    log_message("GPU memory cleared after day processing")
                 except:
                     pass
         else:
-            print("No day files to process.")
+            log_message("No day files to process.", force=True)
             
         if night_files:
-            print("\n--- Processing NIGHT data ---")
+            log_message("\n--- Processing NIGHT data ---", force=True)
             night_results = self.process_files(night_files, 'Night')
             gc.collect()
             if self.use_gpu:
                 try:
                     cp.get_default_memory_pool().free_all_blocks()
-                    print("GPU memory cleared after night processing")
+                    log_message("GPU memory cleared after night processing")
                 except:
                     pass
         else:
-            print("No night files to process.")
+            log_message("No night files to process.", force=True)
             
-        print("\nFINAL RESOURCE USAGE:")
+        log_message("\nFINAL RESOURCE USAGE:", force=True)
         self._print_resource_usage()
             
-        print(f"\nProcessing complete. Results (if any) saved in {self.config.OUTPUT_DIR}")
+        log_message(f"\nProcessing complete. Results (if any) saved in {self.config.OUTPUT_DIR}", force=True)
         return day_results, night_results
     
     def _print_resource_usage(self):
@@ -1041,8 +1069,8 @@ class MODISLSTProcessor:
             mem_total_gb = mem.total / (1024 ** 3)
             mem_percent = mem.percent
             
-            print(f"CPU Usage: {cpu_percent}%")
-            print(f"RAM Usage: {mem_used_gb:.2f}GB / {mem_total_gb:.2f}GB ({mem_percent}%)")
+            log_message(f"CPU Usage: {cpu_percent}%", force=True)
+            log_message(f"RAM Usage: {mem_used_gb:.2f}GB / {mem_total_gb:.2f}GB ({mem_percent}%)", force=True)
             
             # GPU memory if available
             if self.use_gpu:
@@ -1050,11 +1078,11 @@ class MODISLSTProcessor:
                     gpu_mem_used = cp.cuda.Device().mem_info[1]
                     gpu_mem_total = cp.cuda.Device().mem_info[0]
                     gpu_percent = (gpu_mem_used / gpu_mem_total) * 100
-                    print(f"GPU Memory: {gpu_mem_used/(1024**3):.2f}GB / {gpu_mem_total/(1024**3):.2f}GB ({gpu_percent:.1f}%)")
+                    log_message(f"GPU Memory: {gpu_mem_used/(1024**3):.2f}GB / {gpu_mem_total/(1024**3):.2f}GB ({gpu_percent:.1f}%)", force=True)
                 except:
-                    print("Could not get GPU memory info")
+                    log_message("Could not get GPU memory info")
         except:
-            print("Could not get resource usage information")
+            log_message("Could not get resource usage information")
 
 # Hàm chính để chạy quy trình xử lý
 def main():
@@ -1066,29 +1094,29 @@ def main():
     config.initialize_dirs()
     
     # Kiểm tra và in thông tin hệ thống
-    print("\n=== SYSTEM INFORMATION ===")
-    print(f"CPU: {psutil.cpu_count(logical=True)} logical cores, {psutil.cpu_count(logical=False)} physical cores")
+    log_message("\n=== SYSTEM INFORMATION ===", force=True)
+    log_message(f"CPU: {psutil.cpu_count(logical=True)} logical cores, {psutil.cpu_count(logical=False)} physical cores", force=True)
     mem = psutil.virtual_memory()
-    print(f"RAM: {mem.total / (1024**3):.2f} GB total")
-    print(f"GPU: {'Available' if HAS_GPU else 'Not available'}")
+    log_message(f"RAM: {mem.total / (1024**3):.2f} GB total", force=True)
+    log_message(f"GPU: {'Available' if HAS_GPU else 'Not available'}", force=True)
     
-    # Hiển thị thêm thông tin về tối ưu hóa
-    print(f"Numba optimization: {'Available' if HAS_NUMBA else 'Not available'}")
+    # Hiển thị thêm thông tin về tối ưu hóa, nhưng chỉ một lần
+    log_message(f"Numba optimization: {'Available' if HAS_NUMBA else 'Not available'}", force=True)
     
     # Khởi tạo processor với cấu hình đã tối ưu
     processor = MODISLSTProcessor(config=config)
     
-    print(f"\nStarting LST gap filling: {config.START_DATE} to {config.END_DATE}")
-    print(f"Using {processor.num_workers} CPU workers and GPU={processor.use_gpu}")
+    log_message(f"\nStarting LST gap filling: {config.START_DATE} to {config.END_DATE}", force=True)
+    # Không lặp lại thông báo về số workers và GPU
     
     # Chạy quá trình xử lý
     day_results, night_results = processor.process_time_series()
     
     if not day_results and not night_results:
-        print("No results generated.")
+        log_message("No results generated.", force=True)
     else:
-        print("Gap filling completed.")
-    print(f"For visualization, consider MODISGapfilling/visualizer.py.")
+        log_message("Gap filling completed.", force=True)
+    log_message(f"For visualization, consider MODISGapfilling/visualizer.py.", force=True)
 
 if __name__ == "__main__":
     # Quan trọng cho multiprocessing trên Windows
