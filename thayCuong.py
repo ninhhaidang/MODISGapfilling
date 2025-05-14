@@ -14,6 +14,12 @@ import gc # Để quản lý bộ nhớ (tùy chọn)
 import psutil # Thêm thư viện để theo dõi và quản lý tài nguyên
 import warnings
 import math
+import logging
+
+# Đặt biến môi trường để loại bỏ thông báo import lặp lại
+os.environ['NUMBA_WARNINGS'] = '0'
+os.environ['CUPY_LOG_LEVEL'] = '30'  # WARNING level
+os.environ['MKL_VERBOSE'] = '0'
 
 # Biến toàn cục để tránh hiển thị trùng lặp thông báo
 _VERBOSE_MODE = True # Đặt False để giảm bớt thông báo
@@ -387,6 +393,22 @@ def _process_temporal_block(args):
                                     pass
         return result
 
+# Hàm khởi tạo cho tiến trình con, sẽ được gọi khi worker process được tạo
+def _init_worker():
+    # Tắt tất cả các thông báo trong worker process
+    import os
+    os.environ['NUMBA_WARNINGS'] = '0'
+    os.environ['CUPY_LOG_LEVEL'] = '30'
+    os.environ['MKL_VERBOSE'] = '0'
+    
+    # Thiết lập logging để không hiển thị thông báo
+    import logging
+    logging.basicConfig(level=logging.ERROR)
+    
+    # Tắt các cảnh báo
+    import warnings
+    warnings.filterwarnings('ignore')
+
 # --- LỚP MODISLSTProcessor ĐÃ ĐƯỢC SỬA ĐỔI ---
 class MODISLSTProcessor:
     def __init__(self, config=None, num_workers=None):
@@ -507,19 +529,27 @@ class MODISLSTProcessor:
             # Mỗi phần tử float32 chiếm 4 bytes
             data_size_gb = (data_cube.size * 4) / (1024**3)
             
-            # Heuristic để tính số khối cần thiết (có thể điều chỉnh)
-            num_blocks = max(8, min(24, int(data_size_gb / (free_mem_gb * 0.2))))
+            # Tối ưu hóa số khối để tận dụng CPU tốt hơn
+            # Dùng nhiều worker hơn khi dữ liệu lớn
+            optimal_blocks = min(self.num_workers, max(8, int(math.sqrt(total_pixels) / 200)))
+            num_blocks = max(optimal_blocks, min(24, int(data_size_gb / (free_mem_gb * 0.1))))
             log_message(f"Data size: {data_size_gb:.2f} GB, Free memory: {free_mem_gb:.2f} GB")
             log_message(f"Dividing into {num_blocks} blocks for temporal gap filling")
         except:
             # Fallback nếu không thể đo bộ nhớ
-            num_blocks = 12
+            num_blocks = max(12, self.num_workers // 2)
             log_message(f"Using default {num_blocks} blocks for temporal gap filling")
         
         # Sử dụng multithreading nếu có Numba, multiprocessing nếu không
         if HAS_NUMBA:
-            log_message("Using Numba-optimized temporal gap filling", force=True)
-            block_rows = math.ceil(rows / num_blocks)
+            log_message("Using Numba-optimized temporal gap filling (parallel)", force=True)
+            # Kích hoạt parallel execution trong Numba
+            if hasattr(numba, 'set_num_threads'):
+                # Sử dụng tất cả các core có sẵn
+                numba.set_num_threads(self.num_workers)
+                log_message(f"Numba parallelism enabled with {self.num_workers} threads")
+            
+            block_rows = max(1, math.ceil(rows / num_blocks))
             result_cube = np.copy(data_cube)
             
             for i in range(0, rows, block_rows):
@@ -529,16 +559,12 @@ class MODISLSTProcessor:
                     log_message(f"Processing block rows {i} to {end_i}...")
                 
                 block = data_cube[:, i:end_i, :]
-                if HAS_NUMBA:
-                    # Khối được xử lý với tối ưu Numba
-                    result_block = _numba_temporal_gapfill_block(
-                        block, 
-                        self.config.TEMPORAL_NEIGHBOR_DAYS, 
-                        self.config.TEMPORAL_MIN_NEIGHBORS
-                    )
-                else:
-                    # Fallback không dùng Numba
-                    result_block = _process_temporal_block((block, self.config))
+                # Khối được xử lý với tối ưu Numba
+                result_block = _numba_temporal_gapfill_block(
+                    block, 
+                    self.config.TEMPORAL_NEIGHBOR_DAYS, 
+                    self.config.TEMPORAL_MIN_NEIGHBORS
+                )
                 
                 result_cube[:, i:end_i, :] = result_block
                 
@@ -552,26 +578,43 @@ class MODISLSTProcessor:
                 gc.collect()
         else:
             log_message("Using multiprocessing for temporal gap filling", force=True)
-            # Chia thành các khối hàng
-            block_rows = math.ceil(rows / num_blocks)
+            # Chia thành các khối hàng và cột để tận dụng tốt hơn CPU
+            # Mỗi worker xử lý một phần nhỏ dữ liệu thay vì những dải lớn
+            block_size = max(50, min(200, int(math.sqrt(rows*cols / num_blocks))))
             blocks = []
             
-            for i in range(0, rows, block_rows):
-                end_i = min(i + block_rows, rows)
-                block = data_cube[:, i:end_i, :]
-                blocks.append((block, self.config))
+            # Tạo lưới các khối nhỏ hơn để xử lý song song
+            for i in range(0, rows, block_size):
+                end_i = min(i + block_size, rows)
+                for j in range(0, cols, block_size):
+                    end_j = min(j + block_size, cols)
+                    block = data_cube[:, i:end_i, j:end_j]
+                    if not np.all(np.isnan(block)):  # Chỉ xử lý khối có dữ liệu
+                        blocks.append((block, self.config))
+            
+            log_message(f"Created {len(blocks)} blocks of approx. {block_size}x{block_size} pixels each")
             
             # Xử lý song song các khối với multiprocessing
-            with multiprocessing.Pool(processes=min(num_blocks, self.num_workers)) as pool:
+            with multiprocessing.Pool(processes=min(len(blocks), self.num_workers), initializer=_init_worker) as pool:
                 processed_blocks = pool.map(_process_temporal_block, blocks)
             
             # Kết hợp kết quả
             result_cube = np.copy(data_cube)
-            for i, block_result in enumerate(processed_blocks):
-                start_i = i * block_rows
-                end_i = min(start_i + block_rows, rows)
-                result_cube[:, start_i:end_i, :] = block_result
-                
+            block_idx = 0
+            
+            for i in range(0, rows, block_size):
+                end_i = min(i + block_size, rows)
+                for j in range(0, cols, block_size):
+                    end_j = min(j + block_size, cols)
+                    if block_idx < len(processed_blocks) and not np.all(np.isnan(data_cube[:, i:end_i, j:end_j])):
+                        result_cube[:, i:end_i, j:end_j] = processed_blocks[block_idx]
+                        block_idx += 1
+                    
+                # Báo cáo tiến độ theo dòng
+                if (i + block_size) % (max(rows // 5, block_size)) < block_size:
+                    progress = (i + block_size) / rows * 100
+                    log_message(f"Temporal gap filling progress: {progress:.1f}%", force=True)
+            
             # Giải phóng bộ nhớ
             del blocks, processed_blocks
             gc.collect()
@@ -593,8 +636,9 @@ class MODISLSTProcessor:
         num_images = data_array.shape[0]
         slices_to_process = [(data_array[i], self.config) for i in range(num_images)]
         
-        print(f"Filtering outliers for {num_images} images using {self.num_workers} workers...")
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
+        log_message(f"Filtering outliers for {num_images} images using {self.num_workers} workers...")
+        # Thêm initializer
+        with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             filtered_slices = pool.map(_worker_filter_outliers, slices_to_process)
         
         return np.stack(filtered_slices) if filtered_slices else data_array
@@ -716,15 +760,16 @@ class MODISLSTProcessor:
 
     def process_files(self, file_list, time_of_day):
         if not file_list:
-            print(f"No files to process for {time_of_day}.")
+            log_message(f"No files to process for {time_of_day}.")
             return None
 
-        print(f"Processing {len(file_list)} files for {time_of_day} using {self.num_workers} workers...")
+        log_message(f"Processing {len(file_list)} files for {time_of_day} using {self.num_workers} workers...", force=True)
         
         # Chuẩn bị đối số cho worker: list các tuple (file_path, self.config)
         args_for_pool = [(file_path, self.config) for file_path in file_list]
 
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
+        # Sử dụng initializer để tắt thông báo trong worker processes
+        with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             # results_from_workers là list các tuple (processed_data, profile, basename)
             results_from_workers = pool.map(_worker_load_and_preprocess_tif, args_for_pool)
         
@@ -811,7 +856,7 @@ class MODISLSTProcessor:
 
     def process_data_array(self, data_array_input):
         if data_array_input is None or data_array_input.size == 0:
-            print("Error: Input data_array is None/empty.")
+            log_message("Error: Input data_array is None/empty.", level="ERROR")
             return None
         
         data_array = data_array_input.copy()
@@ -820,30 +865,30 @@ class MODISLSTProcessor:
 
         num_images = data_array.shape[0]
 
-        print(f"Applying spatial gap filling for {num_images} images using {self.num_workers} workers...")
+        log_message(f"Applying spatial gap filling for {num_images} images using {self.num_workers} workers...", force=True)
         args_for_spatial_pool = [(data_array[i], self.config) for i in range(num_images)]
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
+        with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             filled_spatial_slices = pool.map(_worker_spatial_gapfill, args_for_spatial_pool)
         del args_for_spatial_pool
         gc.collect()
         
         if not filled_spatial_slices or len(filled_spatial_slices) != num_images:
-            print("Error during spatial gap filling: not all slices were processed.")
+            log_message("Error during spatial gap filling: not all slices were processed.", level="ERROR")
             return None # Hoặc xử lý lỗi khác
         data_array = np.stack(filled_spatial_slices)
         del filled_spatial_slices
         gc.collect()
 
-        print("Applying temporal gap filling (sequentially)...")
-        data_array = self.temporal_gapfill(data_array) # Tuần tự
-        if data_array is None: print("Error: data_array became None after temporal_gapfill."); return None
-        if np.all(np.isnan(data_array)): print("Warning: Data array is all NaN before long-term mean."); return data_array
+        log_message("Applying temporal gap filling (parallel)...", force=True)
+        data_array = self.temporal_gapfill(data_array) # Đã tối ưu hóa song song
+        if data_array is None: log_message("Error: data_array became None after temporal_gapfill.", level="ERROR"); return None
+        if np.all(np.isnan(data_array)): log_message("Warning: Data array is all NaN before long-term mean.", level="WARNING"); return data_array
         
-        print("Calculating long-term mean...")
+        log_message("Calculating long-term mean...", force=True)
         mean_lst = np.nanmean(data_array, axis=0)
-        if np.all(np.isnan(mean_lst)): print("Warning: Long-term mean is all NaN."); return data_array
+        if np.all(np.isnan(mean_lst)): log_message("Warning: Long-term mean is all NaN.", level="WARNING"); return data_array
         
-        print(f"Computing and smoothing residuals for {num_images} images using {self.num_workers} workers...")
+        log_message(f"Computing and smoothing residuals for {num_images} images using {self.num_workers} workers...", force=True)
         residuals = data_array - mean_lst[np.newaxis, :, :]
         del data_array # Giải phóng
         gc.collect()
@@ -851,14 +896,17 @@ class MODISLSTProcessor:
         args_for_residual_smoothing_pool = [(residuals[i], self.config.RESIDUAL_UNIFORM_FILTER_SIZE) for i in range(num_images)]
         
         smoothed_residuals_slices = []
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
+        with multiprocessing.Pool(processes=self.num_workers, initializer=_init_worker) as pool:
             # Áp dụng _nan_robust_uniform_filter 2 lần
+            log_message("First pass of residual smoothing...", force=True)
             temp_smoothed_once = pool.map(self._nan_robust_uniform_filter, args_for_residual_smoothing_pool)
+            
             # Cập nhật args cho lần chạy thứ 2
             args_for_second_pass = [(s, self.config.RESIDUAL_UNIFORM_FILTER_SIZE) for s in temp_smoothed_once if s is not None]
             # Chỉ xử lý những slice không None
             if args_for_second_pass:
-                 smoothed_residuals_slices = pool.map(self._nan_robust_uniform_filter, args_for_second_pass)
+                log_message("Second pass of residual smoothing...", force=True)
+                smoothed_residuals_slices = pool.map(self._nan_robust_uniform_filter, args_for_second_pass)
             else: # Nếu tất cả là None sau lần đầu
                  smoothed_residuals_slices = temp_smoothed_once # Giữ nguyên kết quả None
         
@@ -866,12 +914,12 @@ class MODISLSTProcessor:
         gc.collect()
 
         if not smoothed_residuals_slices or len(smoothed_residuals_slices) != num_images:
-             # Xử lý trường hợp một số slice là None hoặc số lượng không khớp
-            print("Warning: Some residual slices might be None or count mismatch after smoothing.")
+            # Xử lý trường hợp một số slice là None hoặc số lượng không khớp
+            log_message("Warning: Some residual slices might be None or count mismatch after smoothing.", level="WARNING")
             # Tạo lại mảng smoothed_residuals với kích thước đúng, điền NaN nếu cần
             valid_smoothed_residuals = [s for s in smoothed_residuals_slices if s is not None]
             if not valid_smoothed_residuals: # Nếu tất cả đều None
-                print("All residual slices are None after smoothing. Returning original residuals or handling error.")
+                log_message("All residual slices are None after smoothing. Returning original residuals or handling error.", level="WARNING")
                 # Quyết định trả về residuals gốc hoặc một mảng NaN
                 # Ở đây, giả sử lỗi và trả về None để dừng xử lý
                 return None
@@ -881,7 +929,7 @@ class MODISLSTProcessor:
                 if len(valid_smoothed_residuals) == num_images:
                      smoothed_residuals = np.stack(valid_smoothed_residuals)
                 else: # Nếu số lượng không khớp, đây là vấn đề
-                     print(f"Error: Mismatch in smoothed residual slices count. Expected {num_images}, got {len(valid_smoothed_residuals)}")
+                     log_message(f"Error: Mismatch in smoothed residual slices count. Expected {num_images}, got {len(valid_smoothed_residuals)}", level="ERROR")
                      # Cần chiến lược điền bù hoặc dừng lại.
                      # Ví dụ: Điền bằng residuals gốc cho những slice bị lỗi
                      reconstructed_residuals = []
@@ -898,21 +946,20 @@ class MODISLSTProcessor:
                      smoothed_residuals = np.stack(reconstructed_residuals)
 
             except ValueError as ve:
-                print(f"ValueError when stacking smoothed residuals: {ve}. Dimensions might be inconsistent.")
+                log_message(f"ValueError when stacking smoothed residuals: {ve}. Dimensions might be inconsistent.", level="ERROR")
                 # Xử lý lỗi ở đây, ví dụ trả về residuals chưa làm mịn hoặc None
                 return None # Hoặc residuals
         else:
              smoothed_residuals = np.stack(smoothed_residuals_slices)
 
-
         del smoothed_residuals_slices, residuals # Giải phóng
         gc.collect()
 
-        print("Applying temporal smoothing to residuals (sequentially)...")
+        log_message("Applying temporal smoothing to residuals...", force=True)
         smoothed_temporal_residuals = self.apply_temporal_smoothing(smoothed_residuals) # Tuần tự
         
         if smoothed_temporal_residuals is None: # Nếu apply_temporal_smoothing trả về None (do lỗi)
-            print("Warning: Temporal smoothing of residuals failed. Using unsmoothed residuals.")
+            log_message("Warning: Temporal smoothing of residuals failed. Using unsmoothed residuals.", level="WARNING")
             final_lst = smoothed_residuals + mean_lst[np.newaxis, :, :]
         else:
             final_lst = smoothed_temporal_residuals + mean_lst[np.newaxis, :, :]
@@ -920,7 +967,7 @@ class MODISLSTProcessor:
         del smoothed_residuals, smoothed_temporal_residuals, mean_lst
         gc.collect()
 
-        print("Filtering outliers from final LST (parallel)...")
+        log_message("Filtering outliers from final LST (parallel)...", force=True)
         return self.filter_outliers(final_lst) # Song song
 
     def organize_results_by_date(self, final_lst_input, original_data_input, dates_input, file_sources_input, time_of_day, profile):
@@ -1086,8 +1133,33 @@ class MODISLSTProcessor:
 
 # Hàm chính để chạy quy trình xử lý
 def main():
-    # Cấu hình multiprocessing cho Windows
-    multiprocessing.set_start_method('spawn', force=True)
+    # Quan trọng cho multiprocessing trên Windows
+    multiprocessing.freeze_support()
+    
+    try:
+        # Đặt phương thức khởi tạo process phù hợp với hệ thống
+        # 'spawn' là cách an toàn nhất cho Windows, sẽ tránh clone toàn bộ process
+        multiprocessing.set_start_method('spawn', force=True)
+        log_message("Using 'spawn' multiprocessing start method", force=True)
+    except RuntimeError:
+        # Nếu start method đã được đặt từ trước
+        log_message(f"Using existing multiprocessing start method: {multiprocessing.get_start_method()}", force=True)
+    
+    # Thiết lập để sử dụng tối đa CPU cores mà không gây quá tải
+    os.environ['OPENBLAS_NUM_THREADS'] = str(max(1, os.cpu_count() // 2))
+    os.environ['MKL_NUM_THREADS'] = str(max(1, os.cpu_count() // 2))
+    
+    # Cài đặt numba nếu có
+    if HAS_NUMBA:
+        try:
+            # Tắt JIT warning và thông tin debug
+            os.environ['NUMBA_WARNINGS'] = '0'
+            os.environ['NUMBA_DEBUG'] = '0'
+            # Tắt việc quảng bá tính năng
+            if hasattr(numba, 'config'):
+                numba.config.ENABLE_CUDASIM = 0
+        except:
+            pass
     
     # Tối ưu hóa cấu hình theo tài nguyên hệ thống
     config = Config.optimize_for_system()
@@ -1119,6 +1191,4 @@ def main():
     log_message(f"For visualization, consider MODISGapfilling/visualizer.py.", force=True)
 
 if __name__ == "__main__":
-    # Quan trọng cho multiprocessing trên Windows
-    multiprocessing.freeze_support() 
     main()
